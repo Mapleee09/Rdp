@@ -10,45 +10,72 @@ jobs:
 
     steps:
 
+      ###########################################
+      # Enable RDP
+      ###########################################
       - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
 
+      ###########################################
+      # Create Strong RDP User (NO ERRORS)
+      ###########################################
       - name: Create RDP User
         run: |
-          $password = "Rdp@" + (Get-Random -Maximum 999999)
+          Add-Type -AssemblyName System.Web
+
+          # Generate guaranteed strong password
+          $password = [System.Web.Security.Membership]::GeneratePassword(16,3)
+
           $sec = ConvertTo-SecureString $password -AsPlainText -Force
+
           New-LocalUser -Name "RDP" -Password $sec -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
+      ###########################################
+      # Install Tailscale
+      ###########################################
       - name: Install Tailscale
         run: |
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\ts.msi"
           Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\ts.msi`" /quiet /norestart" -Wait
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TS_KEY }} --hostname=GitHub-RDP --accept-dns=true
 
-      - name: Install Cloudflare WARP (India IP)
+      ###########################################
+      # Install Cloudflare WARP (India IP)
+      ###########################################
+      - name: Install Cloudflare WARP
         run: |
           Invoke-WebRequest -Uri "https://1.1.1.1/windows/WarpSetup.exe" -OutFile "$env:TEMP\warp.exe"
           Start-Process "$env:TEMP\warp.exe" -ArgumentList "/quiet" -Wait
 
+          # Register + enable WARP (gives India IP)
           & "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe" register
           & "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe" set-mode warp
           & "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe" connect
 
+      ###########################################
+      # Show Login Details
+      ###########################################
       - name: Show Login Info
         run: |
           $tsip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          Write-Host "=============================="
-          Write-Host "RDP Active"
+          Write-Host "======================================"
+          Write-Host "       WINDOWS RDP IS READY"
+          Write-Host ""
           Write-Host "Connect to: $tsip"
           Write-Host "Username: RDP"
           Write-Host "Password: $env:RDP_PASS"
-          Write-Host "=============================="
+          Write-Host ""
+          Write-Host "======================================"
 
-      - name: Keep Session Alive
+      ###########################################
+      # Keep Runner Alive
+      ###########################################
+      - name: Keep Alive
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
