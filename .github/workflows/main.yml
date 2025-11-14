@@ -1,0 +1,108 @@
+name: UltraSmooth-RDP
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: ⚙️ Configure Ultra Performance Settings
+        run: |
+          Write-Host "Optimizing Windows for smooth RDP experience..."
+
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+
+          # Firewall rule
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+          # Performance tweaks
+          powercfg /S SCHEME_MIN
+          powercfg /change standby-timeout-ac 0
+          powercfg /change hibernate-timeout-ac 0
+          reg add "HKLM\Software\Policies\Microsoft\Windows\System" /v "DisableAutomaticRestartSignOn" /t REG_DWORD /d 1 /f
+          reg add "HKCU\Control Panel\Desktop" /v "MenuShowDelay" /t REG_SZ /d 0 /f
+          reg add "HKCU\Control Panel\Mouse" /v "MouseHoverTime" /t REG_SZ /d 0 /f
+          reg add "HKCU\Control Panel\Desktop" /v "DragFullWindows" /t REG_SZ /d 0 /f
+
+          # Disable unnecessary background services for speed
+          Stop-Service -Name "SysMain" -Force
+          Set-Service -Name "SysMain" -StartupType Disabled
+          Stop-Service -Name "DiagTrack" -Force
+          Set-Service -Name "DiagTrack" -StartupType Disabled
+          Stop-Service -Name "wsearch" -Force
+          Set-Service -Name "wsearch" -StartupType Disabled
+
+          Restart-Service -Name TermService -Force
+
+      - name: 👤 Create RDP User
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper = [char[]](65..90)
+              Lower = [char[]](97..122)
+              Number = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          Write-Host "✅ RDP User Created Successfully"
+
+      - name: 🌐 Install and Configure Tailscale
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$path`"", "/quiet", "/norestart" -Wait
+          Remove-Item $path -Force
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=ultra-rdp-${{ github.run_id }}
+
+          # Get Tailscale IP
+          $tsIP = ""
+          for ($i=0; $i -lt 10 -and !$tsIP; $i++) {
+              $tsIP = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4) | Select-String "100."
+              Start-Sleep -Seconds 5
+          }
+          if (-not $tsIP) { Write-Error "Tailscale IP not found."; exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: 🔍 Verify RDP Connectivity
+        run: |
+          Write-Host "Testing RDP port on $env:TAILSCALE_IP ..."
+          $result = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if ($result.TcpTestSucceeded) {
+              Write-Host "✅ RDP Port reachable via Tailscale"
+          } else {
+              Write-Error "❌ Cannot connect to RDP port 3389"
+              exit 1
+          }
+
+      - name: 🧠 Maintain UltraSmooth RDP
+        run: |
+          Write-Host "`n========= RDP CONNECTION INFO ========="
+          Write-Host "Tailscale Address : $env:TAILSCALE_IP"
+          Write-Host "Username          : RDP"
+          Write-Host "Password          : $env:RDP_PASS"
+          Write-Host "======================================`n"
+
+          # Keep the runner alive for manual RDP usage
+          while ($true) {
+              Write-Host "[$(Get-Date)] Ultra RDP running smoothly... (Use Ctrl+C to end)"
+              Start-Sleep -Seconds 300
+          }
