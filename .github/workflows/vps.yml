@@ -1,0 +1,77 @@
+name: Ubuntu-Developer-VPS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dev-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 🔐 Generate Root Password
+        run: |
+          PASS=$(openssl rand -base64 12)
+          echo "ROOT_PASS=$PASS" >> $GITHUB_ENV
+
+      - name: 🔧 Enable SSH Server
+        run: |
+          sudo apt update
+          sudo apt install -y openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+
+          # Allow root login & password auth
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          echo "root:${ROOT_PASS}" | sudo chpasswd
+          sudo systemctl restart ssh
+
+      - name: 🌐 Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=dev-vps-$GITHUB_RUN_ID
+
+          TSIP=$(tailscale ip -4)
+          echo "TS_IP=$TSIP" >> $GITHUB_ENV
+
+      - name: 🐳 Install Docker & Compose
+        run: |
+          sudo apt update
+          sudo apt install -y ca-certificates curl gnupg lsb-release
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt update
+          sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          sudo usermod -aG docker $USER
+
+      - name: 💻 Install Node.js + Git + Python
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+          sudo apt install -y nodejs git python3 python3-pip build-essential
+
+      - name: 🌍 Install Nginx
+        run: |
+          sudo apt install -y nginx
+          sudo systemctl enable nginx
+          sudo systemctl start nginx
+
+      - name: 🔥 Show VPS Access Info
+        run: |
+          echo "======================================="
+          echo "🔥 Ubuntu Developer VPS is Ready!"
+          echo "SSH IP  : $TS_IP"
+          echo "SSH Port: 22"
+          echo "User    : root"
+          echo "Password: $ROOT_PASS"
+          echo "======================================="
+
+      - name: ⏳ Keep VPS Alive
+        run: |
+          while true; do
+            echo "[$(date)] VPS Active..."
+            sleep 300
+          done
